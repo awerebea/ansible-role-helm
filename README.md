@@ -1,4 +1,4 @@
-# Ansible Role: helm terminal emulator
+# Ansible Role: Helm, the Kubernetes package manager
 
 An Ansible Role that installs [Helm](https://helm.sh/) on Linux.
 
