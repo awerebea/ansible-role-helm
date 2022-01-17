@@ -1,0 +1,122 @@
+---
+# Install Helm
+
+- name: Check Helm version.
+  shell: >
+    set -o pipefail && {{ helm_bin_dir }}/helm version |
+    grep -Eo "[0-9]{1,}(\.[0-9]{1,}){0,}" | head -n1
+  args:
+    executable: /usr/bin/bash
+  changed_when: false
+  failed_when: false
+  register: helm_curr_ver
+
+- name: Filter current version stdout.
+  set_fact:
+    helm_current_ver: '{{ helm_curr_ver.stdout |
+    regex_search("[0-9]{1,}(\.[0-9]{1,}){0,2}") }}'
+  when: helm_curr_ver.rc == 0
+
+- name: Filter desired Helm version.
+  set_fact:
+    helm_desired_ver: '{{ helm_version |
+    regex_search("[0-9]{1,}(\.[0-9]{1,}){0,2}") }}'
+  when: helm_version is defined
+
+- name: Basic tasks.
+  block:
+    - name: Create missing directories.
+      block:
+        - name: Get status of directories.
+          stat:
+            path: '{{ item }}'
+          register: helm_dirstatus
+          with_items:
+            - '{{ helm_download_dir }}'
+            - '{{ helm_bin_dir }}'
+
+        - name: Create directories in a loop.
+          include_tasks: create-dir.yaml
+          vars:
+            dir_path: '{{ item.item }}'
+          with_items: '{{ helm_dirstatus.results }}'
+          when: not item.stat.exists
+
+    - name: Update status of directories.
+      stat:
+        path: '{{ item }}'
+      register: helm_dirstatus
+      with_items:
+        - '{{ helm_download_dir }}'
+        - '{{ helm_bin_dir }}'
+
+    - name: Determine latest release number.
+      block:
+        - name: Ensure pip3 is installed.
+          apt:
+            name: python3-pip
+            state: present
+          become: true
+
+        - name: Ensure required python module is installed.
+          pip:
+            name: github3.py
+
+        - name: Get the latest release tag.
+          community.general.github_release:
+            user: helm
+            repo: helm
+            action: latest_release
+          register: helm_latest_release
+
+        - name: Filter release number.
+          set_fact:
+            helm_latest_release_tag: '{{ helm_latest_release.tag |
+            regex_search("([0-9]{1,}\.)+[0-9]{1,}") }}'
+
+      when: helm_version is not defined
+
+    - name: Define release number.
+      set_fact:
+        helm_release_number: "v{{ helm_desired_ver
+        if (helm_desired_ver is defined) else helm_latest_release_tag }}"
+
+    - name: Download and extract the archive.
+      unarchive:
+        src: "{{ helm_repo_path }}/helm-{{ helm_release_number }}-\
+        {{ helm_platform }}-{{ helm_arch }}.tar.gz"
+        dest: '{{ helm_download_dir }}'
+        remote_src: true
+        mode: 0755
+      become: '{{ not helm_dirstatus.results[0].stat.writeable }}'
+
+    - name: Copy helm binary into place.
+      copy:
+        src: '{{ helm_download_dir }}/{{ helm_platform }}-{{ helm_arch }}/helm'
+        dest: '{{ helm_bin_dir }}/helm'
+        mode: 0755
+        remote_src: true
+      become: '{{ not helm_dirstatus.results[1].stat.writeable }}'
+
+    - name: Ensure the bin dir is in the system PATH.
+      lineinfile:
+        dest: '{{ item }}'
+        line: '[[ ":$PATH:" != *":{{ helm_bin_dir }}:"* ]] &&
+        export PATH="$PATH:{{ helm_bin_dir }}"'
+        state: present
+        backup: false
+      with_items: '{{ helm_env_files_to_modify }}'
+      failed_when: false
+      when: helm_env_files_to_modify | length > 0
+
+  # Conditions for starting basic tasks: Helm is not installed at the
+  # desired/default helm_bin_dir directory path, or the installed
+  # and desired versions do not match, or a force upgrade to the latest version
+  # is defined (in which case the desired version should not be determined).
+  when: >
+    helm_curr_ver.rc !=0
+    or (helm_desired_ver is defined
+    and helm_current_ver is
+    version(helm_desired_ver, '!=', version_type='strict'))
+    or (update_apps is defined
+    and ('all' in update_apps or 'helm' in update_apps | lower))

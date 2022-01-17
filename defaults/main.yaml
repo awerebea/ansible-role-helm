@@ -1,0 +1,7 @@
+---
+helm_platform: linux
+helm_arch: amd64
+helm_repo_path: https://get.helm.sh
+helm_bin_dir: /usr/local/bin
+helm_download_dir: /tmp
+helm_env_files_to_modify: []
